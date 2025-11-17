@@ -1,0 +1,27 @@
+{
+    "name": "raid-bot",
+    "version": "1.0.0",
+    "description": "TG Raid Bot",
+    "private": true,
+    "main": "index.js",
+    "scripts": {
+        "format": "npx prettier 'src/**/*.{js,ts,mjs,cjs,json}' --write",
+        "compile": "tsc",
+        "start": "npm run compile && node ./dist/index.js"
+    },
+    "author": "Deezzir",
+    "license": "ISC",
+    "devDependencies": {
+        "@types/node": "^22.15.18",
+        "typescript": "^5.8.3"
+    },
+    "dependencies": {
+        "@xdevplatform/xdk": "^0.1.2-beta",
+        "axios": "^1.11.0",
+        "dotenv": "^16.5.0",
+        "helius-sdk": "^1.5.3",
+        "helmet": "^8.1.0",
+        "mongoose": "^8.18.1",
+        "telegraf": "^4.16.3"
+    }
+}
