@@ -107,10 +107,33 @@ async function checkBotGroup(): Promise<boolean> {
     return false;
 }
 
+async function checkResourcePath(path: string): Promise<boolean> {
+    const fs = await import('fs').then((mod) => mod.promises);
+    try {
+        const stats = await fs.stat(path);
+        if (!stats.isDirectory()) {
+            throw new Error(`${path} is not a directory`);
+        }
+        const files = await fs.readdir(path);
+        if (files.length === 0) {
+            throw new Error(`${path} is empty`);
+        }
+        return true;
+    } catch (err) {
+        common.logError(`Resource path check failed: ${err}`);
+        return false;
+    }
+}
+
 async function main() {
-    const valid = await checkBotGroup();
-    if (!valid) {
+    const validPath = await checkResourcePath(config.resourcePath);
+    const validBot = await checkBotGroup();
+    if (!validBot) {
         common.logError(`The Bot is not correctly set up in the target group`);
+        process.exit(1);
+    }
+    if (!validPath) {
+        common.logError(`Resource path is not correctly set up: ${config.resourcePath}`);
         process.exit(1);
     }
 
