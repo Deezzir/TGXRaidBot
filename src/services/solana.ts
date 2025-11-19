@@ -48,6 +48,7 @@ class SolanaService {
             if (!claimTX) {
                 common.logWarn(`SolanaService.buyBackToken: No rewards to claim.`);
             }
+            common.logInfo(`SolanaService.buyBackToken: Claimed dev rewards: ${claimTX}`);
 
             const buyAmount = (await this.getDevBalance()) * config.solana.buyBackPercent;
             if (buyAmount <= 0) {
@@ -61,7 +62,8 @@ class SolanaService {
                 return null;
             }
 
-            const liqAmount = this.calculateAddLiqAmount(buyAmount);
+            const liqAmount = await this.calculateAddLiqAmount(buyAmount);
+            common.logInfo(`SolanaService.buyBackToken: Adding liquidity with ${liqAmount} SOL.`);
             const addLiqTX = await this.addLiquidity(liqAmount);
             if (!addLiqTX) {
                 common.logWarn(`SolanaService.buyBackToken: Add liquidity transaction not completed.`);
@@ -74,8 +76,73 @@ class SolanaService {
         return null;
     }
 
-    calculateAddLiqAmount(buyAmount: number) {
-        return buyAmount * 0.0125; // 1.25% of buy amount
+    private getMarketCap(quote_reserves: BN, base_reserves: BN, supply: BN, solPriceUSD: number): number {
+        const TOKEN_DECIMALS = 6;
+        const price_sol =
+            Number(quote_reserves) / LAMPORTS_PER_SOL / (Number(base_reserves) / Math.pow(10, TOKEN_DECIMALS));
+        const mcap_sol = (price_sol * Number(supply)) / Math.pow(10, TOKEN_DECIMALS);
+        return mcap_sol * solPriceUSD;
+    }
+
+    private async calculateAddLiqAmount(buyAmount: number) {
+        try {
+            let mc: number = 0;
+
+            const solPriceUSD = await this.getSolanaPriceUSD();
+            const user = config.solana.devWalletKeypair.publicKey;
+            const mint = config.solana.token;
+            const poolKey = await this.getAMMFromMint(config.solana.token);
+            const supply = await this.connection.getTokenSupply(mint);
+            if (poolKey) {
+                const { pool } = await this.onlinePumpAMM.swapSolanaState(poolKey, user);
+                const tokenReserves = await this.getVaultBalance(pool.poolBaseTokenAccount);
+                const solReserves = await this.getVaultBalance(pool.poolQuoteTokenAccount);
+                mc = this.getMarketCap(solReserves, tokenReserves, new BN(supply.value.amount), solPriceUSD);
+            } else {
+                const { bondingCurve } = await this.onlinePump.fetchBuyState(mint, user);
+                mc = this.getMarketCap(
+                    bondingCurve.virtualSolReserves,
+                    bondingCurve.virtualTokenReserves,
+                    new BN(supply.value.amount),
+                    solPriceUSD
+                );
+            }
+            common.logInfo(`SolanaService.calculateAddLiqAmount: Market Cap is $${mc.toLocaleString()}`);
+            if (mc < 100_000) {
+                return buyAmount * config.solana.addLiqPercent99k;
+            } else if (mc >= 100_000 && mc < 1_000_000) {
+                return buyAmount * config.solana.addLiqPercent999k;
+            } else {
+                return buyAmount * config.solana.addLiqPercent1000k;
+            }
+        } catch (error) {
+            common.logError(`SolanaService.calculateAddLiqAmount: ${error}`);
+        }
+
+        return buyAmount * config.solana.addLiqPercent99k;
+    }
+
+    private async getVaultBalance(account: PublicKey): Promise<BN> {
+        try {
+            const balance = await this.connection.getTokenAccountBalance(account, this.commitment);
+            return new BN(balance.value.amount);
+        } catch (error) {
+            common.logError(`SolanaService.getVaultBalance: ${error}`);
+        }
+        return new BN(0);
+    }
+
+    private async getSolanaPriceUSD(): Promise<number> {
+        return fetch(`https://frontend-api-v3.pump.fun/sol-price`)
+            .then((response) => response.json())
+            .then((data) => {
+                if (!data || data.statusCode !== undefined) return 0.0;
+                return data.solPrice;
+            })
+            .catch((err) => {
+                common.logError(`SolanaService.getSolanaPriceUSD: ${err}`);
+                return 0.0;
+            });
     }
 
     private async claimDevRewards(): Promise<string | null> {

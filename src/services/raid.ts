@@ -13,6 +13,15 @@ interface RaidState {
     process: Promise<void> | null;
     currentInterval: number;
     stopRequested: boolean;
+    oneShot: boolean;
+}
+
+interface RaidPost {
+    postURL: string;
+    likes: number;
+    retweets: number;
+    replies: number;
+    bookmarks: number;
 }
 
 export default class RaidService {
@@ -27,7 +36,8 @@ export default class RaidService {
             currentRaid: raid,
             process: null,
             currentInterval: config.raid.startInterval,
-            stopRequested: false
+            stopRequested: false,
+            oneShot: false
         };
 
         if (active && raid) {
@@ -42,7 +52,7 @@ export default class RaidService {
     static async initialize(bot: Telegraf): Promise<RaidService> {
         const currentRaid = await DBService.getActiveRaid();
         if (currentRaid) {
-            common.logInfo(`Resuming active raid on post ID: ${currentRaid.postID}`);
+            common.logInfo(`Resuming active raid on post: ${currentRaid.postURL}`);
             return new RaidService(bot, true, currentRaid);
         }
         return new RaidService(bot);
@@ -52,10 +62,15 @@ export default class RaidService {
         return this.state.active;
     }
 
-    async startRaid(): Promise<void> {
+    async startRaid(post?: RaidPost): Promise<void> {
         if (this.state.active || this.state.process) {
             common.logWarn('RaidService.startRaid called but raid is already running.');
             return;
+        }
+
+        if (post) {
+            this.state.currentRaid = await this.useExistingPost(post);
+            this.state.oneShot = true;
         }
 
         common.logInfo('RaidService.startRaid: starting main loop.');
@@ -98,34 +113,33 @@ export default class RaidService {
         while (!this.state.stopRequested) {
             try {
                 if (!this.state.currentRaid) {
-                    this.state.currentRaid = await this.createNextRaid();
+                    this.state.currentRaid = (await this.createNextRaid()) || (await this.fetchNextRaid());
                     if (!this.state.currentRaid) {
                         common.logWarn('RaidService.mainLoop: no raid created, sleeping and retrying.');
-                        await this.sendTGMessage(
-                            `No available images to post. Retrying in ${Math.floor(
-                                config.raid.checkInterval / 1000
-                            )} seconds...`
-                        );
-                        await common.sleep(config.raid.checkInterval);
+                        await common.sleep(config.raid.errorInterval);
                         continue;
                     }
-                    await this.countdown(5);
                 }
 
+                await this.countdown(5);
                 await this.raidLoop(this.state.currentRaid);
                 await this.updateCurrentInterval();
                 this.state.currentRaid = null;
 
                 if (this.state.stopRequested) break;
+                if (this.state.oneShot) {
+                    common.logInfo('RaidService.mainLoop: one-shot raid completed, exiting main loop.');
+                    break;
+                }
 
                 common.logInfo(`RaidService.mainLoop: sleeping for ${this.state.currentInterval} ms before next raid.`);
                 await this.sendTGMessage(
-                    `Next block will start in ${Math.floor(this.state.currentInterval / 1000)} seconds...`
+                    `Next block will start in ~${Math.ceil(this.state.currentInterval / 1000 / 60)} minutes...`
                 );
                 await common.sleep(this.state.currentInterval);
             } catch (error) {
                 common.logError(`RaidService.mainLoop iteration error: ${error}`);
-                await common.sleep(5000);
+                await common.sleep(config.raid.errorInterval);
             }
         }
 
@@ -133,8 +147,8 @@ export default class RaidService {
     }
 
     private async raidLoop(raid: IRaid): Promise<void> {
-        if (!raid.postID) {
-            common.logError('RaidService.raidLoop: called with raid without postID.');
+        if (!raid.postURL) {
+            common.logError('RaidService.raidLoop: called with raid without postURL.');
             return;
         }
 
@@ -146,23 +160,28 @@ export default class RaidService {
         const raidTimeoutAt = new Date(raid.startedAt.getTime() + config.raid.timeout);
         let completed = false;
         let currentMessageID: number | null = null;
-        let currentMetrics: IMetrics | undefined = undefined;
+        let currentMetrics: IMetrics | null = null;
 
-        common.logInfo(`RaidService.raidLoop: running raid #${raid.index} for postID ${raid.postID}.`);
+        common.logInfo(`RaidService.raidLoop: running raid #${raid.index} for post: ${raid.postURL}.`);
 
         while (new Date() < raidTimeoutAt && !this.state.stopRequested) {
             try {
-                if (currentMessageID) {
-                    await this.deleteMessage(currentMessageID);
-                }
-                currentMetrics = await XService.getPostMetrics(raid.postID);
-                currentMessageID = await this.sendRaidStatusMessage(raid, currentMetrics);
+                if (currentMessageID) await this.deleteMessage(currentMessageID);
+                const postInfo = await XService.getPostInfo(raid.postURL);
+                if (postInfo) {
+                    currentMetrics = {
+                        likes: postInfo.likes,
+                        retweets: postInfo.retweets,
+                        replies: postInfo.replies,
+                        bookmarks: postInfo.bookmarks
+                    };
 
-                if (this.hasReachedTarget(raid.targetMetrics, currentMetrics)) {
-                    completed = true;
-                    break;
+                    currentMessageID = await this.sendRaidStatusMessage(raid, currentMetrics);
+                    if (this.hasReachedTarget(raid.targetMetrics, currentMetrics)) {
+                        completed = true;
+                        break;
+                    }
                 }
-
                 await common.sleep(config.raid.checkInterval);
             } catch (error) {
                 common.logError(`RaidService.raidLoop error for raid #${raid.index}: ${error}`);
@@ -342,6 +361,90 @@ export default class RaidService {
         }
     }
 
+    private extractImageSource(
+        media: {
+            photoUrls: string[];
+            videoUrls: string[];
+        } | null
+    ): string | undefined {
+        if (!media) return undefined;
+        if (media.photoUrls?.length > 0) return media.photoUrls[0];
+        if (media.videoUrls?.length > 0) return undefined; // don't use video for now
+        return undefined;
+    }
+
+    private async createRaidFromPost(params: {
+        postURL: string;
+        postImageSource?: string;
+        baseMetrics: { likes: number; retweets: number; replies: number; bookmarks: number };
+        extraMetrics: { likes: number; retweets: number; replies: number; bookmarks: number };
+    }): Promise<IRaid | null> {
+        return DBService.createRaid({
+            postURL: params.postURL,
+            postImageSource: params.postImageSource,
+            state: RaidStateEnum.Active,
+            startedAt: new Date(),
+            targetMetrics: {
+                likes: params.baseMetrics.likes + params.extraMetrics.likes,
+                retweets: params.baseMetrics.retweets + params.extraMetrics.retweets,
+                replies: params.baseMetrics.replies + params.extraMetrics.replies,
+                bookmarks: params.baseMetrics.bookmarks + params.extraMetrics.bookmarks
+            }
+        });
+    }
+
+    private async useExistingPost(post: RaidPost): Promise<IRaid | null> {
+        try {
+            const postInfo = await XService.getPostInfo(post.postURL);
+            if (!postInfo) return null;
+            const postImageSource = this.extractImageSource(postInfo.media);
+
+            return await this.createRaidFromPost({
+                postURL: post.postURL,
+                postImageSource,
+                baseMetrics: post,
+                extraMetrics: postInfo
+            });
+        } catch (error) {
+            common.logError(`RaidService.useExistingPost: ${error}`);
+            return null;
+        }
+    }
+
+    private async fetchNextRaid(): Promise<IRaid | null> {
+        try {
+            const raidIndex = await DBService.getNextRaidIndex();
+            const timeline = await XService.getUserPosts(config.x.username);
+            const extraMetrics = await this.getNextTargetMetrics();
+
+            const expectedPayload = `${config.projectName} engagement block #${raidIndex}`;
+
+            for (const postInfo of timeline) {
+                if (postInfo.text?.includes(expectedPayload)) {
+                    const postImageSource = this.extractImageSource(postInfo.media);
+
+                    const raid = await this.createRaidFromPost({
+                        postURL: `https://x.com/${config.x.username}/status/${postInfo.id}`,
+                        postImageSource,
+                        baseMetrics: postInfo,
+                        extraMetrics
+                    });
+
+                    if (raid)
+                        common.logInfo(
+                            `RaidService.fetchNextRaid: Found existing post for raid #${raid.index}: ${raid.postURL}`
+                        );
+
+                    return raid;
+                }
+            }
+        } catch (error) {
+            common.logError(`RaidService.fetchNextRaid: ${error}`);
+        }
+
+        return null;
+    }
+
     private async createNextRaid(): Promise<IRaid | null> {
         try {
             const path = await this.getRandomPicture();
@@ -350,44 +453,28 @@ export default class RaidService {
                 return null;
             }
 
+            const raidIndex = await DBService.getNextRaidIndex();
             const targetMetrics = await this.getNextTargetMetrics();
             const imageBuffer = common.getImageBuffer(path);
+            const payload = `${config.projectName} engagement block #${raidIndex}`;
+            const mediaID = await XService.uploadMedia(imageBuffer, 'image/png');
+            const postID = await XService.createPost(payload, [mediaID]);
+            const postURL = `https://x.com/${config.x.username}/status/${postID}`;
 
             let raid = await DBService.createRaid({
-                postImageFileName: basename(path),
+                postImageSource: basename(path),
                 targetMetrics,
-                state: RaidStateEnum.Cancelled,
+                state: RaidStateEnum.Active,
+                postURL: postURL,
                 startedAt: new Date()
             });
 
-            try {
-                const payload = `dogwifcap engagement block #${raid.index}`;
-                const mediaID = await XService.uploadMedia(imageBuffer, 'image/png');
-                const postID = await XService.createPost(payload, [mediaID]);
-
-                await DBService.updateRaid(String(raid._id), {
-                    postID,
-                    state: RaidStateEnum.Active
-                });
-
-                raid.postID = postID;
-                raid.state = RaidStateEnum.Active;
-
-                common.logInfo(`RaidService.createNextRaid: Created raid #${raid.index} with post ID: ${postID}`);
-
-                return raid;
-            } catch (xerror) {
-                await DBService.updateRaid(String(raid._id), {
-                    state: RaidStateEnum.Cancelled,
-                    endedAt: new Date()
-                });
-                common.logError(`RaidService.createNextRaid posting error: ${xerror}`);
-                return null;
-            }
+            common.logInfo(`RaidService.createNextRaid: Created raid #${raid.index} with post ID: ${postID}`);
+            return raid;
         } catch (error) {
             common.logError(`RaidService.createNextRaid: ${error}`);
-            return null;
         }
+        return null;
     }
 
     private async sendRaidStatusMessage(
@@ -400,7 +487,6 @@ export default class RaidService {
             0,
             Math.floor((raid.startedAt.getTime() + config.raid.timeout - new Date().getTime()) / 1000)
         );
-        const imagePath = `${config.resourcePath}/${raid.postImageFileName}`;
         const statusPayload = stopRequested
             ? '<b>Block cancelled</b>'
             : completed
@@ -412,7 +498,7 @@ export default class RaidService {
         const retweetsIndicator = metrics.retweets >= Math.floor(raid.targetMetrics.retweets) ? '🟩' : '🟥';
         const repliesIndicator = metrics.replies >= Math.floor(raid.targetMetrics.replies) ? '🟩' : '🟥';
         const bookmarksIndicator = metrics.bookmarks >= Math.floor(raid.targetMetrics.bookmarks) ? '🟩' : '🟥';
-        const postLink = `https://x.com/${config.x.username}/status/${raid.postID}`;
+        const postURL = raid.postURL!;
 
         const caption =
             `<b>Raid Status - Engagement Block #${raid.index}</b>\n\n` +
@@ -421,20 +507,33 @@ export default class RaidService {
             `${repliesIndicator} Replies <b>${metrics.replies} | ${Math.floor(raid.targetMetrics.replies)}</b>\n` +
             `${bookmarksIndicator} Bookmarks <b>${metrics.bookmarks} | ${Math.floor(raid.targetMetrics.bookmarks)}</b>\n\n` +
             `${statusPayload}\n\n` +
-            `${postLink}\n\n` +
+            `${postURL}\n\n` +
             `<b>Buybacks and liquidity adds trigger automatically after a successful raid</b>`;
 
         try {
-            const messageID = await this.sendTGImage(imagePath, caption, 'HTML', {
-                inline_keyboard: [
-                    [
-                        {
-                            text: '🔗 View Post on X',
-                            url: postLink
-                        }
-                    ]
+            let messageID: number | null = null;
+            const inlineKeyboard = [
+                [
+                    {
+                        text: '🔗 View Post on X',
+                        url: postURL
+                    }
                 ]
-            });
+            ];
+            if (!raid.postImageSource) {
+                messageID = await this.sendTGMessage(caption, true, 'HTML', {
+                    inline_keyboard: inlineKeyboard
+                });
+            } else if (raid.postImageSource.startsWith('http://') || raid.postImageSource.startsWith('https://')) {
+                messageID = await this.sendTGImage(raid.postImageSource, 'url', caption, 'HTML', {
+                    inline_keyboard: inlineKeyboard
+                });
+            } else {
+                const imagePath = `${config.resourcePath}/${raid.postImageSource}`;
+                messageID = await this.sendTGImage(imagePath, 'path', caption, 'HTML', {
+                    inline_keyboard: inlineKeyboard
+                });
+            }
             if (messageID) await this.pinTGMessage(messageID);
             return messageID;
         } catch (error) {
@@ -444,27 +543,41 @@ export default class RaidService {
     }
 
     private async sendTGImage(
-        filePath: string,
+        source: string,
+        imageSourceType: 'path' | 'url',
         caption: string,
         parseMode: 'Markdown' | 'HTML' = 'HTML',
         reply_markup?: { inline_keyboard: Array<Array<{ text: string; url: string }>> }
     ): Promise<number | null> {
         try {
-            const imageBuffer = common.getImageBuffer(filePath);
-            const message = await this.bot.telegram.sendPhoto(
-                config.telegram.targetGroupID,
-                { source: imageBuffer },
-                {
-                    caption,
-                    parse_mode: parseMode,
-                    reply_markup
-                }
-            );
-            return message.message_id;
+            if (imageSourceType === 'url') {
+                const message = await this.bot.telegram.sendPhoto(
+                    config.telegram.targetGroupID,
+                    { url: source },
+                    {
+                        caption,
+                        parse_mode: parseMode,
+                        reply_markup
+                    }
+                );
+                return message.message_id;
+            } else if (imageSourceType === 'path') {
+                const imageBuffer = common.getImageBuffer(source);
+                const message = await this.bot.telegram.sendPhoto(
+                    config.telegram.targetGroupID,
+                    { source: imageBuffer },
+                    {
+                        caption,
+                        parse_mode: parseMode,
+                        reply_markup
+                    }
+                );
+                return message.message_id;
+            }
         } catch (error) {
             common.logError(`RaidService.sendTGImage: ${error}`);
-            return null;
         }
+        return null;
     }
 
     private async sendTGMessage(

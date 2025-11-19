@@ -1,12 +1,38 @@
-import { Telegraf } from 'telegraf';
+import { Context, Telegraf } from 'telegraf';
 import { config } from './config';
 import { closeDB, connectDB } from './services/db';
 import * as common from './common';
 import RaidService from './services/raid';
+import XService from './services/x';
 import { ChatMemberAdministrator } from 'telegraf/types';
 
 const bot = new Telegraf(config.telegram.botToken);
 var raidService: RaidService;
+
+async function checkMessageSource(ctx: Context): Promise<boolean> {
+    if (!ctx.chat || !ctx.from) {
+        ctx.sendMessage('Unable to determine chat or user information.');
+        return false;
+    }
+    if (ctx.chat.type === 'private') {
+        ctx.sendMessage('The bot is only available the group.');
+        return false;
+    }
+    if (ctx.chat.id !== config.telegram.targetGroupID) {
+        ctx.sendMessage('This command can only be used in the group.');
+        return false;
+    }
+    const member = await bot.telegram.getChatMember(ctx.chat.id, ctx.from!.id);
+    if (member.status !== 'administrator' && member.status !== 'creator') {
+        ctx.sendMessage('Only group administrators can start a raid.');
+        return false;
+    }
+    if (config.telegram.ownerUserID && ctx.from!.id !== config.telegram.ownerUserID) {
+        ctx.sendMessage('Only the bot owner can start a raid.');
+        return false;
+    }
+    return true;
+}
 
 bot.on('message', async (ctx, next) => {
     const msg = ctx.message;
@@ -38,17 +64,7 @@ bot.command('start', async (ctx) => {
 
 bot.command('raid', async (ctx) => {
     common.logInfo('Received /raid command');
-    if (ctx.chat.type === 'private') {
-        ctx.sendMessage('The bot is only available the group.');
-        return;
-    }
-    if (ctx.chat.id !== config.telegram.targetGroupID) {
-        ctx.sendMessage('This command can only be used in the group.');
-        return;
-    }
-    const member = await bot.telegram.getChatMember(ctx.chat.id, ctx.from!.id);
-    if (member.status !== 'administrator' && member.status !== 'creator') {
-        ctx.sendMessage('Only group administrators can start a raid.');
+    if (!(await checkMessageSource(ctx))) {
         return;
     }
     if (raidService.isActive()) {
@@ -56,23 +72,38 @@ bot.command('raid', async (ctx) => {
         return;
     }
 
-    ctx.reply('Starting the raid...');
-    await raidService.startRaid();
+    const args = ctx.args;
+    if (args.length == 0) {
+        ctx.reply('Starting the raid...');
+        await raidService.startRaid();
+    } else {
+        if (args.length != 5) {
+            ctx.reply('Invalid number of arguments. Usage: /raid <post_url> <likes> <retweets> <replies> <bookmarks>');
+            return;
+        }
+        const postURL = args[0];
+        const likes = parseInt(args[1]);
+        const retweets = parseInt(args[2]);
+        const replies = parseInt(args[3]);
+        const bookmarks = parseInt(args[4]);
+        if (!XService.validatePostURL(postURL)) {
+            ctx.reply('Invalid post URL. Please provide a valid X (Twitter) post URL.');
+            return;
+        }
+        if (isNaN(likes) || isNaN(retweets) || isNaN(replies) || isNaN(bookmarks)) {
+            ctx.reply('Invalid arguments. Likes, retweets, replies, and bookmarks must be numbers.');
+            return;
+        }
+        ctx.reply(
+            `Starting the raid on post ${postURL}\n\nLikes: ${likes}, Retweets: ${retweets}, Replies: ${replies}, Bookmarks: ${bookmarks}...`
+        );
+        await raidService.startRaid({ postURL, likes, retweets, replies, bookmarks });
+    }
 });
 
 bot.command('cancel', async (ctx) => {
     common.logInfo('Received /cancel command');
-    if (ctx.chat.type === 'private') {
-        ctx.sendMessage('The bot is only available the group.');
-        return;
-    }
-    if (ctx.chat.id !== config.telegram.targetGroupID) {
-        ctx.sendMessage('This command can only be used in the group.');
-        return;
-    }
-    const member = await bot.telegram.getChatMember(ctx.chat.id, ctx.from!.id);
-    if (member.status !== 'administrator' && member.status !== 'creator') {
-        ctx.sendMessage('Only group administrators can start a raid.');
+    if (!(await checkMessageSource(ctx))) {
         return;
     }
     if (!raidService.isActive()) {
@@ -84,7 +115,7 @@ bot.command('cancel', async (ctx) => {
     await raidService.cancelRaid();
 });
 
-async function checkBotGroup(): Promise<boolean> {
+async function checkBotInGroup(): Promise<boolean> {
     const group = config.telegram.targetGroupID;
     const botInfo = await bot.telegram.getMe();
 
@@ -127,7 +158,7 @@ async function checkResourcePath(path: string): Promise<boolean> {
 
 async function main() {
     const validPath = await checkResourcePath(config.resourcePath);
-    const validBot = await checkBotGroup();
+    const validBot = await checkBotInGroup();
     if (!validBot) {
         common.logError(`The Bot is not correctly set up in the target group`);
         process.exit(1);

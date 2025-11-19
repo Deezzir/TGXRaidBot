@@ -19,6 +19,7 @@ export enum Environment {
 
 // Config
 export const config = {
+    projectName: getEnvvar('PROJECT_NAME', 'raidbot') as string,
     env: getEnvvar('NODE_ENV', 'development') as Environment,
     telegram: {
         botToken: getEnvvar('BOT_TOKEN'),
@@ -28,13 +29,17 @@ export const config = {
             raid: 'Start the raid',
             cancel: 'Cancel all current raids and actions'
         },
-        targetGroupID: parseInt(getEnvvar('TARGET_GROUP_ID'))
+        targetGroupID: parseInt(getEnvvar('TARGET_GROUP_ID')),
+        ownerUserID: process.env.OWNER_USER_ID ? parseInt(process.env.OWNER_USER_ID) : null
     },
     solana: {
         heliusAPIKey: getEnvvar('HELIUS_API_KEY'),
         devWalletKeypair: Keypair.fromSecretKey(base58.decode(getEnvvar('DEV_KEYPAIR'))),
         token: new PublicKey(getEnvvar('TOKEN_MINT')),
-        buyBackPercent: parseFloat(getEnvvar('BUYBACK_PERCENT', '0.05'))
+        buyBackPercent: parseFloat(getEnvvar('BUYBACK_PERCENT', '0.05')),
+        addLiqPercent99k: parseFloat(getEnvvar('ADD_LIQ_PERCENT_100', '0.0125')),
+        addLiqPercent999k: parseFloat(getEnvvar('ADD_LIQ_PERCENT_500', '0.025')),
+        addLiqPercent1000k: parseFloat(getEnvvar('ADD_LIQ_PERCENT_1000', '0.05'))
     },
     raid: {
         checkInterval: parseInt(getEnvvar('RAID_CHECK_INTERVAL', '15')) * 1000,
@@ -55,7 +60,8 @@ export const config = {
         maxLikes: parseInt(getEnvvar('RAID_MAX_LIKES', '28')),
         maxRetweets: parseInt(getEnvvar('RAID_MAX_RETWEETS', '5')),
         maxReplies: parseInt(getEnvvar('RAID_MAX_REPLIES', '19')),
-        maxBookmarks: parseInt(getEnvvar('RAID_MAX_BOOKMARKS', '15'))
+        maxBookmarks: parseInt(getEnvvar('RAID_MAX_BOOKMARKS', '15')),
+        errorInterval: parseInt(getEnvvar('RAID_ERROR_INTERVAL', '10')) * 1000
     },
     x: {
         APIKey: getEnvvar('X_API_KEY'),

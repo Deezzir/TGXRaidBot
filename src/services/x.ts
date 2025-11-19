@@ -3,14 +3,22 @@ import * as common from '../common';
 import { config } from '../config';
 import axios from 'axios';
 
-interface PostMetrics {
+export interface IPostInfo {
+    id: string;
+    text?: string;
     retweets: number;
     replies: number;
     likes: number;
     quotes: number;
     bookmarks: number;
     views: number;
+    media: {
+        photoUrls: string[];
+        videoUrls: string[];
+    } | null;
 }
+
+const postURLPattern = /^https?:\/\/(www\.)?x\.com\/([a-zA-Z0-9_]{1,15})\/status\/(\d+)$/;
 
 class XService {
     private client: Client;
@@ -27,8 +35,55 @@ class XService {
         this.client = new Client({ oauth1: oauth1 });
     }
 
-    async getPostMetrics(postID: string): Promise<PostMetrics> {
+    validatePostURL(postURL: string): boolean {
+        return postURLPattern.test(postURL);
+    }
+
+    extractPostID(postURL: string): string | null {
+        const match = postURL.match(postURLPattern);
+        return match ? match[3] : null;
+    }
+
+    private getPostMediaURLs(postData: any): { photoUrls: string[]; videoUrls: string[] } | null {
+        const photoUrls: string[] = [];
+        const videoUrls: string[] = [];
+
+        if (!postData.media || typeof postData.media !== 'object') {
+            return { photoUrls, videoUrls };
+        }
+
+        const media = postData.media;
+
+        if (media.photo && Array.isArray(media.photo)) {
+            for (const photo of media.photo) {
+                if (photo.media_url_https) {
+                    photoUrls.push(photo.media_url_https);
+                }
+            }
+        }
+
+        if (media.video && Array.isArray(media.video)) {
+            for (const video of media.video) {
+                if (video.variants && Array.isArray(video.variants)) {
+                    const sortedVariants = video.variants
+                        .filter((variant: any) => variant.bitrate)
+                        .sort((a: any, b: any) => b.bitrate - a.bitrate);
+                    if (sortedVariants.length > 0 && sortedVariants[0].url) {
+                        videoUrls.push(sortedVariants[0].url);
+                    }
+                }
+            }
+        }
+
+        if (photoUrls.length === 0 && videoUrls.length === 0) return null;
+        return { photoUrls, videoUrls };
+    }
+
+    async getPostInfo(postURL: string): Promise<IPostInfo | null> {
         try {
+            const postID = this.extractPostID(postURL);
+            if (!postID) throw new Error('Invalid post URL, could not extract post ID');
+
             const options = {
                 method: 'GET',
                 url: `${config.x.RapidApiURL}/tweet.php`,
@@ -38,20 +93,69 @@ class XService {
                 headers: config.x.RapidApiHeaders
             };
             const response = await axios.request(options);
-            if (!response.data) throw new Error('No data or public_metrics in getPostMetrics response');
+            if (!response.data) throw new Error('No data in getPostMetrics response');
+            const data = response.data;
+            const media = this.getPostMediaURLs(data);
 
             return {
-                retweets: response.data.retweets || 0,
-                replies: response.data.replies || 0,
-                likes: response.data.likes || 0,
-                quotes: response.data.quotes || 0,
-                bookmarks: response.data.bookmarks || 0,
-                views: parseInt(response.data.views || '0')
+                retweets: data.retweets || 0,
+                replies: data.replies || 0,
+                likes: data.likes || 0,
+                quotes: data.quotes || 0,
+                bookmarks: data.bookmarks || 0,
+                views: parseInt(data.views || '0'),
+                media,
+                id: postID,
+                text: data.text
             };
         } catch (error) {
-            common.logError(`XService.getPostMetrics: ${postID} - ${error}`);
-            throw new Error(`XService.getPostMetrics failed: ${error}`);
+            common.logError(`XService.getPostMetrics: ${postURL} - ${error}`);
         }
+        return null;
+    }
+
+    async getUserPosts(
+        username: string,
+        opts?: { includeReplies: boolean; includeReposts: boolean }
+    ): Promise<IPostInfo[]> {
+        try {
+            const options = {
+                method: 'GET',
+                url: `${config.x.RapidApiURL}/timeline.php`,
+                params: {
+                    screenname: username
+                },
+                headers: config.x.RapidApiHeaders
+            };
+            const response = await axios.request(options);
+            if (!response.data) throw new Error('No data in getPostMetrics response');
+            if (!response.data.timeline || !Array.isArray(response.data.timeline))
+                throw new Error('Invalid timeline data');
+            const timeline = response.data.timeline as any[];
+
+            const posts: IPostInfo[] = [];
+            for (const tweet of timeline) {
+                if (!opts?.includeReplies && tweet.reply_to) continue;
+                if (!opts?.includeReposts && tweet.retweeted) continue;
+
+                const media = this.getPostMediaURLs(tweet);
+                posts.push({
+                    id: tweet.tweet_id,
+                    text: tweet.text,
+                    retweets: tweet.retweet_count || 0,
+                    replies: tweet.reply_count || 0,
+                    likes: tweet.favorite_count || 0,
+                    quotes: tweet.quote_count || 0,
+                    bookmarks: tweet.bookmark_count || 0,
+                    views: tweet.view_count || 0,
+                    media
+                });
+            }
+            return posts;
+        } catch (error) {
+            common.logError(`XService.getUserPosts: ${username} - ${error}`);
+        }
+        return [];
     }
 
     async createPost(text: string, mediaIDs: string[] = []): Promise<string> {

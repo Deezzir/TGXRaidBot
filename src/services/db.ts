@@ -19,10 +19,10 @@ export interface IMetrics {
 export interface IRaid extends Document {
     targetMetrics: IMetrics;
     index: number;
-    postImageFileName: string;
+    postImageSource?: string;
     startedAt: Date;
     state: RaidStateEnum;
-    postID?: string;
+    postURL?: string;
     endedAt?: Date;
     buyBackTX: string | null;
     addLiqTX: string | null;
@@ -45,8 +45,8 @@ const RaidSchema: Schema = new Schema(
         },
         state: { type: String, enum: Object.values(RaidStateEnum), required: true, default: RaidStateEnum.Active },
         index: { type: Number, required: true },
-        postID: { type: String, required: false },
-        postImageFileName: { type: String, required: true },
+        postURL: { type: String, required: false },
+        postImageSource: { type: String, required: false },
         startedAt: { type: Date, required: true, default: Date.now },
         endedAt: { type: Date, required: false },
         buyBackTX: { type: String, required: false },
@@ -71,6 +71,16 @@ RaidSchema.pre('validate', async function (next) {
 const RaidModel = mongoose.model<IRaid>('Raid', RaidSchema);
 
 class DBService {
+    async getNextRaidIndex(): Promise<number> {
+        try {
+            const counter = await CounterModel.findOne({ name: 'raid_index' });
+            return counter ? counter.seq + 1 : 1;
+        } catch (error) {
+            common.logError(`DBService.getNextRaidIndex: ${error}`);
+            throw new Error(`DBService.getNextRaidIndex failed: ${error}`);
+        }
+    }
+
     async getRaids(): Promise<IRaid[]> {
         try {
             const raids = await RaidModel.find().lean().exec();
@@ -125,11 +135,11 @@ class DBService {
     async getUsedPostImageFiles(): Promise<string[]> {
         try {
             const raids = await RaidModel.find({ state: RaidStateEnum.Completed })
-                .select('postImageFileName')
+                .select('postImageSource')
                 .lean()
                 .exec();
 
-            return raids.map((raid) => raid.postImageFileName).filter(Boolean);
+            return raids.map((raid) => raid.postImageSource).filter((source): source is string => Boolean(source));
         } catch (error) {
             common.logError(`DBService.getUsedPostImageFiles: ${error}`);
             throw new Error(`DBService.getUsedPostImageFiles failed: ${error}`);
