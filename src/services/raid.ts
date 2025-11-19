@@ -400,7 +400,7 @@ export default class RaidService {
             0,
             Math.floor((raid.startedAt.getTime() + config.raid.timeout - new Date().getTime()) / 1000)
         );
-        const imagePath = `${config.resourcePath}${raid.postImageFileName}`;
+        const imagePath = `${config.resourcePath}/${raid.postImageFileName}`;
         const statusPayload = stopRequested
             ? '<b>Block cancelled</b>'
             : completed
@@ -537,7 +537,7 @@ export default class RaidService {
             const randomIndex = Math.floor(Math.random() * availableImages.length);
             const selectedImage = availableImages[randomIndex];
 
-            return `${config.resourcePath}${selectedImage}`;
+            return `${config.resourcePath}/${selectedImage}`;
         } catch (error) {
             common.logError(`RaidService.getRandomPicture: ${error}`);
             throw new Error(`RaidService.getRandomPicture failed: ${error}`);
