@@ -134,9 +134,9 @@ export default class RaidService {
 
                 common.logInfo(`RaidService.mainLoop: sleeping for ${this.state.currentInterval} ms before next raid.`);
                 await this.sendTGMessage(
-                    `Next block will start in ~${Math.ceil(this.state.currentInterval / 1000 / 60)} minutes...`
+                    `Next block will start in ${Math.ceil(this.state.currentInterval / 1000 / 60)} minutes...`
                 );
-                await common.sleep(this.state.currentInterval);
+                await this.cancellableSleep(this.state.currentInterval);
             } catch (error) {
                 common.logError(`RaidService.mainLoop iteration error: ${error}`);
                 await common.sleep(config.raid.errorInterval);
@@ -630,6 +630,22 @@ export default class RaidService {
             common.logError(`RaidService.countdown: ${error}`);
             throw new Error(`RaidService.countdown failed: ${error}`);
         }
+    }
+
+    private async cancellableSleep(ms: number): Promise<void> {
+        const checkInterval = 1000;
+        const iterations = Math.floor(ms / checkInterval);
+        const remainder = ms % checkInterval;
+
+        for (let i = 0; i < iterations; i++) {
+            if (this.state.stopRequested) {
+                common.logInfo('RaidService.cancellableSleep: sleep interrupted by stop request.');
+                return;
+            }
+            await common.sleep(checkInterval);
+        }
+
+        if (remainder > 0 && !this.state.stopRequested) await common.sleep(remainder);
     }
 
     private async getRandomPicture(): Promise<string | null> {

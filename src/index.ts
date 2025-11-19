@@ -95,7 +95,7 @@ bot.command('raid', async (ctx) => {
             return;
         }
         ctx.reply(
-            `Starting the raid on post ${postURL}\n\nLikes: ${likes}, Retweets: ${retweets}, Replies: ${replies}, Bookmarks: ${bookmarks}...`
+            `Starting the raid on post ${postURL}\n\nLikes: ${likes}, Retweets: ${retweets}, Replies: ${replies}, Bookmarks: ${bookmarks}`
         );
         await raidService.startRaid({ postURL, likes, retweets, replies, bookmarks });
     }
