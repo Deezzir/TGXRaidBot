@@ -142,12 +142,12 @@ class XService {
                 posts.push({
                     id: tweet.tweet_id,
                     text: tweet.text,
-                    retweets: tweet.retweet_count || 0,
-                    replies: tweet.reply_count || 0,
-                    likes: tweet.favorite_count || 0,
-                    quotes: tweet.quote_count || 0,
-                    bookmarks: tweet.bookmark_count || 0,
-                    views: tweet.view_count || 0,
+                    retweets: tweet.retweets || 0,
+                    replies: tweet.replies || 0,
+                    likes: tweet.likes || 0,
+                    quotes: tweet.quotes || 0,
+                    bookmarks: tweet.bookmarks || 0,
+                    views: parseInt(tweet.views || '0'),
                     media
                 });
             }

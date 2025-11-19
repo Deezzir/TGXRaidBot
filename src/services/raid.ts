@@ -123,14 +123,15 @@ export default class RaidService {
 
                 await this.countdown(5);
                 await this.raidLoop(this.state.currentRaid);
-                await this.updateCurrentInterval();
-                this.state.currentRaid = null;
 
                 if (this.state.stopRequested) break;
                 if (this.state.oneShot) {
                     common.logInfo('RaidService.mainLoop: one-shot raid completed, exiting main loop.');
                     break;
                 }
+
+                await this.updateCurrentInterval();
+                this.state.currentRaid = null;
 
                 common.logInfo(`RaidService.mainLoop: sleeping for ${this.state.currentInterval} ms before next raid.`);
                 await this.sendTGMessage(
