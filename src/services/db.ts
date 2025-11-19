@@ -2,20 +2,40 @@ import mongoose, { Schema, Document } from 'mongoose';
 import * as common from '../common';
 import { config, Environment } from '../config';
 
-export interface IRaid extends Document {
-    targetMetrics: {
-        likes: number;
-        retweets: number;
-        replies: number;
-        bookmarks: number;
-    };
-    postID: string;
-    postImageFileName?: string;
-    startedAt: Date;
-    endedAt?: Date;
+export enum RaidStateEnum {
+    Active = 'active',
+    Completed = 'completed',
+    Cancelled = 'cancelled',
+    Expired = 'expired'
 }
 
-const MessageSchema: Schema = new Schema(
+export interface IMetrics {
+    likes: number;
+    retweets: number;
+    replies: number;
+    bookmarks: number;
+}
+
+export interface IRaid extends Document {
+    targetMetrics: IMetrics;
+    index: number;
+    postImageFileName: string;
+    startedAt: Date;
+    state: RaidStateEnum;
+    postID?: string;
+    endedAt?: Date;
+    buyBackTX: string | null;
+    addLiqTX: string | null;
+}
+
+const CounterSchema = new Schema({
+    name: { type: String, required: true, unique: true },
+    seq: { type: Number, default: 0 }
+});
+
+const CounterModel = mongoose.model('Counter', CounterSchema);
+
+const RaidSchema: Schema = new Schema(
     {
         targetMetrics: {
             likes: { type: Number, required: true },
@@ -23,20 +43,37 @@ const MessageSchema: Schema = new Schema(
             replies: { type: Number, required: true },
             bookmarks: { type: Number, required: true }
         },
-        postID: { type: String, required: true },
-        postImageFileName: { type: String, required: false },
+        state: { type: String, enum: Object.values(RaidStateEnum), required: true, default: RaidStateEnum.Active },
+        index: { type: Number, required: true },
+        postID: { type: String, required: false },
+        postImageFileName: { type: String, required: true },
         startedAt: { type: Date, required: true, default: Date.now },
-        endedAt: { type: Date, required: false }
+        endedAt: { type: Date, required: false },
+        buyBackTX: { type: String, required: false },
+        addLiqTX: { type: String, required: false }
     },
     { timestamps: true }
 );
 
-const MessageModel = mongoose.model<IRaid>('Raid', MessageSchema);
+RaidSchema.pre('validate', async function (next) {
+    if (!this.isNew) return next();
+
+    const counter = await CounterModel.findOneAndUpdate(
+        { name: 'raid_index' },
+        { $inc: { seq: 1 } },
+        { new: true, upsert: true }
+    );
+
+    this.index = counter.seq;
+    next();
+});
+
+const RaidModel = mongoose.model<IRaid>('Raid', RaidSchema);
 
 class DBService {
     async getRaids(): Promise<IRaid[]> {
         try {
-            const raids = await MessageModel.find().lean().exec();
+            const raids = await RaidModel.find().lean().exec();
             return raids as unknown as IRaid[];
         } catch (error) {
             common.logError(`DBService.getRaids: ${error}`);
@@ -46,7 +83,7 @@ class DBService {
 
     async createRaid(raidData: Partial<IRaid>): Promise<IRaid> {
         try {
-            const raid = new MessageModel(raidData);
+            const raid = new RaidModel(raidData);
             await raid.save();
             return raid;
         } catch (error) {
@@ -57,13 +94,45 @@ class DBService {
 
     async getActiveRaid(): Promise<IRaid | null> {
         try {
-            const raid = await MessageModel.findOne({ endedAt: { $exists: false } })
-                .lean()
-                .exec();
+            const raid = await RaidModel.findOne({ state: RaidStateEnum.Active }).lean().exec();
             return raid as unknown as IRaid | null;
         } catch (error) {
             common.logError(`DBService.getActiveRaid: ${error}`);
             throw new Error(`DBService.getActiveRaid failed: ${error}`);
+        }
+    }
+
+    async getLatestRaid(): Promise<IRaid | null> {
+        try {
+            const raid = await RaidModel.findOne().sort({ createdAt: -1 }).lean().exec();
+            return raid as unknown as IRaid | null;
+        } catch (error) {
+            common.logError(`DBService.getLatestRaid: ${error}`);
+            throw new Error(`DBService.getLatestRaid failed: ${error}`);
+        }
+    }
+
+    async updateRaid(raidID: string, updateData: Partial<IRaid>): Promise<IRaid | null> {
+        try {
+            const raid = await RaidModel.findByIdAndUpdate(raidID, updateData, { new: true }).exec();
+            return raid as unknown as IRaid | null;
+        } catch (error) {
+            common.logError(`DBService.updateRaid: ${error}`);
+            throw new Error(`DBService.updateRaid failed: ${error}`);
+        }
+    }
+
+    async getUsedPostImageFiles(): Promise<string[]> {
+        try {
+            const raids = await RaidModel.find({ state: RaidStateEnum.Completed })
+                .select('postImageFileName')
+                .lean()
+                .exec();
+
+            return raids.map((raid) => raid.postImageFileName).filter(Boolean);
+        } catch (error) {
+            common.logError(`DBService.getUsedPostImageFiles: ${error}`);
+            throw new Error(`DBService.getUsedPostImageFiles failed: ${error}`);
         }
     }
 }

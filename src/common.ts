@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+
 export function logInfo(msg: string) {
     console.log(`[INFO] ${msg}`);
 }
@@ -23,5 +25,14 @@ export async function retry_with_backoff<T>(operation: () => Promise<T>, retries
             throw error;
         }
         return retry_with_backoff(operation, retries - 1, delay_ms * 3);
+    }
+}
+
+export function getImageBuffer(path: string): Buffer {
+    try {
+        return readFileSync(path);
+    } catch (error) {
+        logError(`getImageBuffer: Failed to read image at path ${path}: ${error}`);
+        throw error;
     }
 }

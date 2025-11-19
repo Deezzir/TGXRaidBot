@@ -54,7 +54,7 @@ class XService {
         }
     }
 
-    async makePost(text: string, mediaIDs: string[] = []): Promise<string> {
+    async createPost(text: string, mediaIDs: string[] = []): Promise<string> {
         try {
             const response = await this.client.posts.create({
                 text: text,
@@ -68,7 +68,7 @@ class XService {
         }
     }
 
-    async makeReply(text: string, inReplyToPostID: string): Promise<string> {
+    async createReply(text: string, inReplyToPostID: string): Promise<string> {
         try {
             const response = await this.client.posts.create({
                 text: text,
@@ -142,4 +142,4 @@ class XService {
     }
 }
 
-export const xService = new XService();
+export default new XService();

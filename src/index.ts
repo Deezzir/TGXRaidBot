@@ -3,9 +3,24 @@ import { config } from './config';
 import { closeDB, connectDB } from './services/db';
 import * as common from './common';
 import RaidService from './services/raid';
+import { ChatMemberAdministrator } from 'telegraf/types';
 
 const bot = new Telegraf(config.telegram.botToken);
 var raidService: RaidService;
+
+bot.on('message', async (ctx, next) => {
+    const msg = ctx.message;
+    // @ts-ignore
+    if (msg && msg.pinned_message) {
+        try {
+            await ctx.deleteMessage(msg.message_id);
+        } catch (error) {
+            common.logError(`Failed to delete pinned message: ${error}`);
+        }
+    }
+
+    return next();
+});
 
 bot.command('start', async (ctx) => {
     common.logInfo('Received /start command');
@@ -16,7 +31,7 @@ bot.command('start', async (ctx) => {
             .map(([cmd, desc]) => `/${cmd} - ${desc}`)
             .join('\n');
         ctx.sendMessage(
-            `${config.telegram.botTitle}\n\n${config.telegram.botDescription}\n\nAvailable commands:\n${commands}\n${config.telegram.botTutorial}`
+            `${config.telegram.botTitle}\n\n${config.telegram.botDescription}\n\nAvailable commands:\n${commands}`
         );
     }
 });
@@ -31,6 +46,16 @@ bot.command('raid', async (ctx) => {
         ctx.sendMessage('This command can only be used in the group.');
         return;
     }
+    const member = await bot.telegram.getChatMember(ctx.chat.id, ctx.from!.id);
+    if (member.status !== 'administrator' && member.status !== 'creator') {
+        ctx.sendMessage('Only group administrators can start a raid.');
+        return;
+    }
+    if (raidService.isActive()) {
+        ctx.reply('A raid is already active.');
+        return;
+    }
+
     ctx.reply('Starting the raid...');
     await raidService.startRaid();
 });
@@ -45,29 +70,67 @@ bot.command('cancel', async (ctx) => {
         ctx.sendMessage('This command can only be used in the group.');
         return;
     }
+    const member = await bot.telegram.getChatMember(ctx.chat.id, ctx.from!.id);
+    if (member.status !== 'administrator' && member.status !== 'creator') {
+        ctx.sendMessage('Only group administrators can start a raid.');
+        return;
+    }
+    if (!raidService.isActive()) {
+        ctx.reply('No active raid to cancel.');
+        return;
+    }
+
     ctx.reply('Cancelling all raids and actions.');
     await raidService.cancelRaid();
 });
 
+async function checkBotGroup(): Promise<boolean> {
+    const group = config.telegram.targetGroupID;
+    const botInfo = await bot.telegram.getMe();
+
+    try {
+        const member = await bot.telegram.getChatMember(group, botInfo.id);
+
+        if (member.status !== 'administrator' && member.status !== 'creator') {
+            throw new Error(`The Bot is not administrator in the target group: ${group}`);
+        }
+        const admin = member as ChatMemberAdministrator;
+        if (
+            !(admin.can_delete_messages && admin.can_change_info && admin.can_restrict_members && admin.can_manage_chat)
+        ) {
+            throw new Error(`The Bot does not have enough group permissions in the target group: ${group}`);
+        }
+        return true;
+    } catch (err) {
+        common.logError(`Failed to validate the Bot in the target group: ${err}`);
+    }
+    return false;
+}
+
 async function main() {
+    const valid = await checkBotGroup();
+    if (!valid) {
+        common.logError(`The Bot is not correctly set up in the target group`);
+        process.exit(1);
+    }
+
     common.logInfo('Connecting to the database...');
     await connectDB();
-    common.logInfo('Database connected.');
 
     common.logInfo('Initializing RaidService...');
-    raidService = await RaidService.initialize();
-    common.logInfo('RaidService initialized.');
+    raidService = await RaidService.initialize(bot);
 
     common.logInfo('Starting the bot...');
-    bot.launch();
-    common.logInfo('Bot started successfully');
+    bot.launch(() => common.logInfo('Bot started successfully'));
 
     process.once('SIGINT', () => {
         bot.stop('SIGINT');
+        raidService.cancelRaid();
         closeDB();
     });
     process.once('SIGTERM', () => {
         bot.stop('SIGTERM');
+        raidService.cancelRaid();
         closeDB();
     });
 }
