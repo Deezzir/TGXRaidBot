@@ -192,7 +192,7 @@ export default class RaidService {
                 endedAt: new Date()
             });
             common.logInfo(`RaidService.raidLoop: raid ${raid.index} completed.`);
-            await this.sendTGMessage(`Raid #${raid.index} has reached target metrics! Executing buy-back...`);
+            await this.sendTGMessage(`<b>Block #${raid.index}</b> has reached target metrics! Executing buy-back...`);
             const tx = await SolanaService.buyBackToken();
             if (tx) {
                 common.logInfo(`RaidService.raidLoop: txs: buyBackTX ${tx.buyTX}, addLiqTX: ${tx.addLiqTX}`);
@@ -201,7 +201,7 @@ export default class RaidService {
             } else {
                 common.logWarn(`RaidService.raidLoop: buyBackToken returned no transaction for raid ${raid.index}.`);
                 await this.sendTGMessage(
-                    `Block #${raid.index} completed successfully!\n\nHowever, buy-back transaction failed.`
+                    `<b>Block #${raid.index}</b> completed successfully!\n\n` + `However, buy-back transaction failed.`
                 );
             }
         } else {
@@ -210,17 +210,38 @@ export default class RaidService {
                 endedAt: new Date()
             });
             common.logInfo(`RaidService.raidLoop: raid ${raid.index} expired.`);
-            await this.sendTGMessage(`Raid #${raid.index} has expired without reaching target metrics.`);
+            await this.sendTGMessage(`<b>Block #${raid.index}</b> has expired without reaching target metrics.`);
         }
     }
 
     private async sendBuyBackMessage(index: number, tx: { buyTX: string; addLiqTX: string | null }): Promise<void> {
         try {
             const { buyTX, addLiqTX } = tx;
-            const messageID = await this.sendTGMessage(
-                `Block #${index} completed successfully!\n\nBuy-back transaction: https://solscan.io/tx/${buyTX}` +
-                    (addLiqTX ? `\nAdd-liquidity transaction: https://solscan.io/tx/${addLiqTX}` : '')
-            );
+
+            const payload =
+                `<b>Block #${index} completed successfully</b>\n\n` +
+                `Buy-back transaction:\n<code>${buyTX}</code>` +
+                (addLiqTX ? `\n\nAdd-liquidity transaction:\n<code>${addLiqTX}</code>` : '');
+
+            const buttons = [
+                [
+                    {
+                        text: '🔗 View Buy-back TX',
+                        url: `https://solscan.io/tx/${buyTX}`
+                    }
+                ]
+            ];
+
+            if (addLiqTX) {
+                buttons[0].push({
+                    text: '🔗 View Add-liquidity TX',
+                    url: `https://solscan.io/tx/${addLiqTX}`
+                });
+            }
+
+            const messageID = await this.sendTGMessage(payload, false, 'HTML', {
+                inline_keyboard: buttons
+            });
             if (messageID) await this.pinTGMessage(messageID);
         } catch (error) {
             common.logError(`RaidService.sendBuyBackMessage: ${error}`);
@@ -340,13 +361,7 @@ export default class RaidService {
             });
 
             try {
-                const payload =
-                    `Block #${raid.index} started\n\n` +
-                    `Target Metrics:\n` +
-                    `Likes: ${Math.floor(raid.targetMetrics.likes)}\n` +
-                    `Retweets: ${Math.floor(raid.targetMetrics.retweets)}\n` +
-                    `Replies: ${Math.floor(raid.targetMetrics.replies)}\n` +
-                    `Bookmarks: ${Math.floor(raid.targetMetrics.bookmarks)}`;
+                const payload = `dogwifcap engagement block #${raid.index}`;
                 const mediaID = await XService.uploadMedia(imageBuffer, 'image/png');
                 const postID = await XService.createPost(payload, [mediaID]);
 
@@ -385,25 +400,41 @@ export default class RaidService {
             0,
             Math.floor((raid.startedAt.getTime() + config.raid.timeout - new Date().getTime()) / 1000)
         );
+        const imagePath = `${config.resourcePath}${raid.postImageFileName}`;
         const statusPayload = stopRequested
-            ? '*Block cancelled*'
+            ? '<b>Block cancelled</b>'
             : completed
-              ? '*Block completed*'
+              ? '<b>Block completed</b>'
               : expiresSecs > 0
-                ? `Block expires in *${expiresSecs}* seconds`
-                : '*Block expired*';
-        const text =
-            `Raid Status for *Block #${raid.index}*\n\n` +
-            `Target Metrics:\n` +
-            `Likes: ${metrics.likes}/${Math.floor(raid.targetMetrics.likes)}\n` +
-            `Retweets: ${metrics.retweets}/${Math.floor(raid.targetMetrics.retweets)}\n` +
-            `Replies: ${metrics.replies}/${Math.floor(raid.targetMetrics.replies)}\n` +
-            `Bookmarks: ${metrics.bookmarks}/${Math.floor(raid.targetMetrics.bookmarks)}\n\n` +
+                ? `Block expires in <b>${expiresSecs}</b> seconds`
+                : '<b>Block expired</b>';
+        const likesIndicator = metrics.likes >= Math.floor(raid.targetMetrics.likes) ? '🟩' : '🟥';
+        const retweetsIndicator = metrics.retweets >= Math.floor(raid.targetMetrics.retweets) ? '🟩' : '🟥';
+        const repliesIndicator = metrics.replies >= Math.floor(raid.targetMetrics.replies) ? '🟩' : '🟥';
+        const bookmarksIndicator = metrics.bookmarks >= Math.floor(raid.targetMetrics.bookmarks) ? '🟩' : '🟥';
+        const postLink = `https://x.com/${config.x.username}/status/${raid.postID}`;
+
+        const caption =
+            `<b>Raid Status - Engagement Block #${raid.index}</b>\n\n` +
+            `${likesIndicator} Likes <b>${metrics.likes} | ${Math.floor(raid.targetMetrics.likes)}</b>\n` +
+            `${retweetsIndicator} Retweets <b>${metrics.retweets} | ${Math.floor(raid.targetMetrics.retweets)}</b>\n` +
+            `${repliesIndicator} Replies <b>${metrics.replies} | ${Math.floor(raid.targetMetrics.replies)}</b>\n` +
+            `${bookmarksIndicator} Bookmarks <b>${metrics.bookmarks} | ${Math.floor(raid.targetMetrics.bookmarks)}</b>\n\n` +
             `${statusPayload}\n\n` +
-            `Post Link: https://x.com/${config.x.username}/status/${raid.postID}`;
+            `${postLink}\n\n` +
+            `<b>Buybacks and liquidity adds trigger automatically after a successful raid</b>`;
 
         try {
-            const messageID = await this.sendTGMessage(text);
+            const messageID = await this.sendTGImage(imagePath, caption, 'HTML', {
+                inline_keyboard: [
+                    [
+                        {
+                            text: '🔗 View Post on X',
+                            url: postLink
+                        }
+                    ]
+                ]
+            });
             if (messageID) await this.pinTGMessage(messageID);
             return messageID;
         } catch (error) {
@@ -412,13 +443,43 @@ export default class RaidService {
         }
     }
 
-    private async sendTGMessage(text: string): Promise<number | null> {
+    private async sendTGImage(
+        filePath: string,
+        caption: string,
+        parseMode: 'Markdown' | 'HTML' = 'HTML',
+        reply_markup?: { inline_keyboard: Array<Array<{ text: string; url: string }>> }
+    ): Promise<number | null> {
+        try {
+            const imageBuffer = common.getImageBuffer(filePath);
+            const message = await this.bot.telegram.sendPhoto(
+                config.telegram.targetGroupID,
+                { source: imageBuffer },
+                {
+                    caption,
+                    parse_mode: parseMode,
+                    reply_markup
+                }
+            );
+            return message.message_id;
+        } catch (error) {
+            common.logError(`RaidService.sendTGImage: ${error}`);
+            return null;
+        }
+    }
+
+    private async sendTGMessage(
+        text: string,
+        preview: boolean = false,
+        parseMode: 'Markdown' | 'HTML' = 'HTML',
+        reply_markup?: { inline_keyboard: Array<Array<{ text: string; url: string }>> }
+    ): Promise<number | null> {
         try {
             const message = await this.bot.telegram.sendMessage(config.telegram.targetGroupID, text, {
                 link_preview_options: {
-                    is_disabled: false
+                    is_disabled: !preview
                 },
-                parse_mode: 'Markdown'
+                parse_mode: parseMode,
+                reply_markup
             });
             return message.message_id;
         } catch (error) {
